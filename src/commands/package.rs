@@ -156,9 +156,9 @@ fn run_for_crate(
     let lib_type = pick_lib_type(&lib_types, lib_type_arg.clone().into(), config)?;
 
     if lib_type == LibType::Dynamic {
-        warning!(
+        info!(
             &config,
-            "Building as dynamic library is discouraged. It might prevent apps that use this library from publishing to the App Store."
+            "Building as dynamic library. The dylib will be wrapped in a .framework bundle for App Store compatibility."
         );
     }
 

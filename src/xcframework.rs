@@ -2,7 +2,7 @@ use crate::console::Error;
 use crate::lib_type::LibType;
 use crate::{Mode, Result, Target};
 use anyhow::{anyhow, Context};
-use std::fs::{remove_dir_all, DirEntry};
+use std::fs::{self, remove_dir_all, DirEntry};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -93,6 +93,121 @@ pub fn patch_xcframework(
 
     Ok(())
 }
+
+/// Creates a .framework bundle wrapping a dynamic library for a single platform slice.
+///
+/// The resulting structure:
+/// ```text
+/// {framework_name}.framework/
+/// ├── Info.plist
+/// ├── {framework_name}     (the dylib, renamed)
+/// ├── Headers/
+/// │   └── *.h
+/// └── Modules/
+///     └── module.modulemap
+/// ```
+fn create_framework_bundle(
+    dylib_path: &str,
+    framework_name: &str,
+    headers_dir: &Path,
+    output_dir: &Path,
+) -> Result<PathBuf> {
+    let framework_dir = output_dir.join(format!("{framework_name}.framework"));
+
+    // Clean up any previous framework bundle
+    if framework_dir.exists() {
+        remove_dir_all(&framework_dir)
+            .with_context(|| format!("Failed to remove old framework bundle {framework_dir:?}"))?;
+    }
+
+    let headers_dst = framework_dir.join("Headers");
+    let modules_dst = framework_dir.join("Modules");
+    fs::create_dir_all(&headers_dst)
+        .with_context(|| format!("Failed to create Headers dir in {framework_dir:?}"))?;
+    fs::create_dir_all(&modules_dst)
+        .with_context(|| format!("Failed to create Modules dir in {framework_dir:?}"))?;
+
+    // Copy dylib → {framework_name} (strip lib prefix and .dylib extension)
+    let binary_dst = framework_dir.join(framework_name);
+    fs::copy(dylib_path, &binary_dst).with_context(|| {
+        format!("Failed to copy dylib from {dylib_path} to {binary_dst:?}")
+    })?;
+
+    // Run install_name_tool to set the framework rpath
+    let install_name = Command::new("install_name_tool")
+        .arg("-id")
+        .arg(format!("@rpath/{framework_name}.framework/{framework_name}"))
+        .arg(&binary_dst)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .context("Failed to run install_name_tool")?;
+
+    if !install_name.status.success() {
+        return Err(anyhow!(
+            "install_name_tool failed: {}",
+            String::from_utf8_lossy(&install_name.stderr)
+        )
+        .into());
+    }
+
+    // Copy header files and modulemap from generated/headers/
+    for entry in fs::read_dir(headers_dir)
+        .with_context(|| format!("Failed to read headers dir {headers_dir:?}"))?
+    {
+        let entry = entry?;
+        let path = entry.path();
+        let Some(name) = path.file_name() else {
+            continue;
+        };
+
+        if path.extension().is_some_and(|ext| ext == "modulemap") {
+            // Patch "module X" → "framework module X" for framework bundles
+            let content = fs::read_to_string(&path)
+                .with_context(|| format!("Failed to read modulemap from {path:?}"))?;
+            let patched = content.replace("module ", "framework module ");
+            fs::write(modules_dst.join(name), patched).with_context(|| {
+                format!("Failed to write patched modulemap from {path:?}")
+            })?;
+        } else {
+            fs::copy(&path, headers_dst.join(name)).with_context(|| {
+                format!("Failed to copy header from {path:?}")
+            })?;
+        }
+    }
+
+    // Write Info.plist
+    let info_plist = format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleDevelopmentRegion</key>
+    <string>en</string>
+    <key>CFBundleExecutable</key>
+    <string>{framework_name}</string>
+    <key>CFBundleIdentifier</key>
+    <string>com.cargo-swift.{framework_name}</string>
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
+    <key>CFBundleName</key>
+    <string>{framework_name}</string>
+    <key>CFBundlePackageType</key>
+    <string>FMWK</string>
+    <key>CFBundleShortVersionString</key>
+    <string>1.0</string>
+    <key>CFBundleVersion</key>
+    <string>1</string>
+</dict>
+</plist>
+"#
+    );
+    fs::write(framework_dir.join("Info.plist"), info_plist)
+        .context("Failed to write framework Info.plist")?;
+
+    Ok(framework_dir)
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn create_xcframework(
     targets: &[Target],
@@ -104,20 +219,6 @@ pub fn create_xcframework(
     mode: Mode,
     lib_type: LibType,
 ) -> Result<()> {
-    /*println!(
-        "Targets: {:#?}\nlib_name: {:?}\nxcframework_name: {:?}\nffi_module_name: {:?}\ngenerated_dir {:?}\noutput_dir: {:?}\nmode: {:?}\nlib_type: {:?}",
-        targets, lib_name, xcframework_name, ffi_module_name, generated_dir, output_dir, mode, lib_type
-    );*/
-    let libs: Vec<_> = targets
-        .iter()
-        .map(|t| t.library_path(lib_name, mode, lib_type))
-        .collect();
-
-    let headers = generated_dir.join("headers");
-    let headers = headers
-        .to_str()
-        .ok_or(anyhow!("Directory for bindings has an invalid name!"))?;
-
     let output_dir_name = &output_dir
         .to_str()
         .ok_or(anyhow!("Output directory has an invalid name!"))?;
@@ -127,11 +228,49 @@ pub fn create_xcframework(
     let mut xcodebuild = Command::new("xcodebuild");
     xcodebuild.arg("-create-xcframework");
 
-    for lib in &libs {
-        xcodebuild.arg("-library");
-        xcodebuild.arg(lib);
-        xcodebuild.arg("-headers");
-        xcodebuild.arg(headers);
+    match lib_type {
+        LibType::Static => {
+            let libs: Vec<_> = targets
+                .iter()
+                .map(|t| t.library_path(lib_name, mode, lib_type))
+                .collect();
+
+            let headers = generated_dir.join("headers");
+            let headers = headers
+                .to_str()
+                .ok_or(anyhow!("Directory for bindings has an invalid name!"))?;
+
+            for lib in &libs {
+                xcodebuild.arg("-library");
+                xcodebuild.arg(lib);
+                xcodebuild.arg("-headers");
+                xcodebuild.arg(headers);
+            }
+        }
+        LibType::Dynamic => {
+            let headers_dir = generated_dir.join("headers");
+
+            for target in targets {
+                let dylib_path = target.library_path(lib_name, mode, lib_type);
+                let lib_dir = PathBuf::from(target.library_directory(mode));
+
+                let fw_path = create_framework_bundle(
+                    &dylib_path,
+                    xcframework_name,
+                    &headers_dir,
+                    &lib_dir,
+                )
+                .with_context(|| {
+                    format!(
+                        "Failed to create framework bundle for target {}",
+                        target.display_name()
+                    )
+                })?;
+
+                xcodebuild.arg("-framework");
+                xcodebuild.arg(&fw_path);
+            }
+        }
     }
 
     let output = xcodebuild
@@ -144,8 +283,12 @@ pub fn create_xcframework(
     if !output.status.success() {
         Err(output.stderr.into())
     } else {
-        patch_xcframework(output_dir, generated_dir, ffi_module_name)
-            .context("Failed to patch the XCFramework")?;
+        // Only patch headers for static libraries — for dynamic, headers are already
+        // inside each .framework bundle and xcodebuild preserves them as-is.
+        if matches!(lib_type, LibType::Static) {
+            patch_xcframework(output_dir, generated_dir, ffi_module_name)
+                .context("Failed to patch the XCFramework")?;
+        }
         Ok(())
     }
 }

@@ -197,19 +197,13 @@ impl Target {
 
     fn rpath_install_id_commands(
         &self,
-        lib_name: &str,
-        mode: Mode,
-        lib_type: LibType,
+        _lib_name: &str,
+        _mode: Mode,
+        _lib_type: LibType,
     ) -> Vec<Command> {
-        if matches!(lib_type, LibType::Dynamic) {
-            vec![command(format!(
-                "install_name_tool -id @rpath/{} {}",
-                library_file_name(lib_name, lib_type),
-                self.library_path(lib_name, mode, lib_type)
-            ))]
-        } else {
-            vec![]
-        }
+        // install_name_tool for dynamic libs is now handled during framework bundling
+        // in xcframework::create_framework_bundle(), where the framework name is known.
+        vec![]
     }
 
     /// Generates all commands necessary to build this target
