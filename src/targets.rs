@@ -292,6 +292,13 @@ pub enum ApplePlatform {
 }
 
 impl ApplePlatform {
+    /// macOS and Mac Catalyst use the historical "versioned" framework bundle layout
+    /// (`Versions/A/...` with symlinks at the top level). All other Apple platforms
+    /// use the flat ("shallow") layout where Info.plist sits at the bundle root.
+    pub fn uses_versioned_bundle(&self) -> bool {
+        matches!(self, ApplePlatform::MacOS | ApplePlatform::MacCatalyst)
+    }
+
     pub fn target(&self) -> Target {
         use ApplePlatform::*;
         match self {

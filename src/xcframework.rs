@@ -1,8 +1,10 @@
 use crate::console::Error;
 use crate::lib_type::LibType;
+use crate::targets::ApplePlatform;
 use crate::{Mode, Result, Target};
 use anyhow::{anyhow, Context};
 use std::fs::{self, remove_dir_all, DirEntry};
+use std::os::unix::fs::symlink;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -96,21 +98,38 @@ pub fn patch_xcframework(
 
 /// Creates a .framework bundle wrapping a dynamic library for a single platform slice.
 ///
-/// The resulting structure:
+/// iOS/tvOS/watchOS/visionOS use the flat ("shallow") layout:
 /// ```text
 /// {framework_name}.framework/
 /// ├── Info.plist
 /// ├── {framework_name}     (the dylib, renamed)
 /// ├── Headers/
-/// │   └── *.h
 /// └── Modules/
-///     └── module.modulemap
+/// ```
+///
+/// macOS and Mac Catalyst require the historical "versioned" layout, where the
+/// real contents live under `Versions/A/` and the bundle root contains symlinks
+/// pointing into `Versions/Current/`:
+/// ```text
+/// {framework_name}.framework/
+/// ├── {framework_name}     -> Versions/Current/{framework_name}
+/// ├── Headers              -> Versions/Current/Headers
+/// ├── Modules              -> Versions/Current/Modules
+/// ├── Resources            -> Versions/Current/Resources
+/// └── Versions/
+///     ├── A/
+///     │   ├── {framework_name}
+///     │   ├── Headers/
+///     │   ├── Modules/
+///     │   └── Resources/Info.plist
+///     └── Current          -> A
 /// ```
 fn create_framework_bundle(
     dylib_path: &str,
     framework_name: &str,
     headers_dir: &Path,
     output_dir: &Path,
+    platform: ApplePlatform,
 ) -> Result<PathBuf> {
     let framework_dir = output_dir.join(format!("{framework_name}.framework"));
 
@@ -120,15 +139,32 @@ fn create_framework_bundle(
             .with_context(|| format!("Failed to remove old framework bundle {framework_dir:?}"))?;
     }
 
-    let headers_dst = framework_dir.join("Headers");
-    let modules_dst = framework_dir.join("Modules");
+    // Pick the directory where the actual binary/headers/modulemap/Info.plist live.
+    // For shallow bundles this is the framework root; for versioned bundles it's
+    // Versions/A and Info.plist goes into Versions/A/Resources.
+    let versioned = platform.uses_versioned_bundle();
+    let content_root = if versioned {
+        framework_dir.join("Versions").join("A")
+    } else {
+        framework_dir.clone()
+    };
+    let info_plist_dir = if versioned {
+        content_root.join("Resources")
+    } else {
+        content_root.clone()
+    };
+
+    let headers_dst = content_root.join("Headers");
+    let modules_dst = content_root.join("Modules");
     fs::create_dir_all(&headers_dst)
-        .with_context(|| format!("Failed to create Headers dir in {framework_dir:?}"))?;
+        .with_context(|| format!("Failed to create Headers dir in {content_root:?}"))?;
     fs::create_dir_all(&modules_dst)
-        .with_context(|| format!("Failed to create Modules dir in {framework_dir:?}"))?;
+        .with_context(|| format!("Failed to create Modules dir in {content_root:?}"))?;
+    fs::create_dir_all(&info_plist_dir)
+        .with_context(|| format!("Failed to create Info.plist dir {info_plist_dir:?}"))?;
 
     // Copy dylib → {framework_name} (strip lib prefix and .dylib extension)
-    let binary_dst = framework_dir.join(framework_name);
+    let binary_dst = content_root.join(framework_name);
     fs::copy(dylib_path, &binary_dst).with_context(|| {
         format!("Failed to copy dylib from {dylib_path} to {binary_dst:?}")
     })?;
@@ -202,10 +238,39 @@ fn create_framework_bundle(
 </plist>
 "#
     );
-    fs::write(framework_dir.join("Info.plist"), info_plist)
+    fs::write(info_plist_dir.join("Info.plist"), info_plist)
         .context("Failed to write framework Info.plist")?;
 
+    if versioned {
+        create_versioned_symlinks(&framework_dir, framework_name)
+            .context("Failed to create framework symlinks")?;
+    }
+
     Ok(framework_dir)
+}
+
+/// For versioned (macOS / Mac Catalyst) frameworks, create the standard symlinks
+/// pointing from the bundle root into `Versions/Current/`.
+fn create_versioned_symlinks(framework_dir: &Path, framework_name: &str) -> Result<()> {
+    // Versions/Current -> A
+    symlink("A", framework_dir.join("Versions").join("Current"))
+        .context("Failed to create Versions/Current symlink")?;
+
+    for top_level in ["Headers", "Modules", "Resources"] {
+        symlink(
+            format!("Versions/Current/{top_level}"),
+            framework_dir.join(top_level),
+        )
+        .with_context(|| format!("Failed to create {top_level} symlink"))?;
+    }
+
+    symlink(
+        format!("Versions/Current/{framework_name}"),
+        framework_dir.join(framework_name),
+    )
+    .context("Failed to create top-level binary symlink")?;
+
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -259,6 +324,7 @@ pub fn create_xcframework(
                     xcframework_name,
                     &headers_dir,
                     &lib_dir,
+                    target.platform(),
                 )
                 .with_context(|| {
                     format!(

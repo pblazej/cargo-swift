@@ -100,6 +100,17 @@ guard !subframeworks.isEmpty else {
     exit(1)
 }
 
+// macOS and Mac Catalyst use the versioned bundle layout (Versions/A/... with
+// top-level symlinks). All other Apple platforms use the shallow layout.
+func usesVersionedBundle(slice: String) -> Bool {
+    return slice.hasPrefix("macos") || slice.contains("maccatalyst")
+}
+
+func isSymlink(atPath path: String) -> Bool {
+    let attrs = try? FileManager.default.attributesOfItem(atPath: path)
+    return (attrs?[.type] as? FileAttributeType) == .typeSymbolicLink
+}
+
 for subframework in subframeworks {
     let slicePath = "\(xcframeworkPath)/\(subframework)"
 
@@ -110,41 +121,68 @@ for subframework in subframeworks {
         exit(1)
     }
 
-    // Framework should contain the binary (renamed, no lib prefix or .dylib extension)
-    guard fileExists(atPath: "\(frameworkPath)/\(xcFrameworkName)") else {
-        error("No binary found at \(frameworkPath)/\(xcFrameworkName)")
+    let versioned = usesVersionedBundle(slice: subframework)
+
+    // Where the actual content lives in the bundle.
+    let contentRoot = versioned ? "\(frameworkPath)/Versions/A" : frameworkPath
+    let infoPlistPath = versioned
+        ? "\(contentRoot)/Resources/Info.plist"
+        : "\(contentRoot)/Info.plist"
+
+    // Binary
+    guard fileExists(atPath: "\(contentRoot)/\(xcFrameworkName)") else {
+        error("No binary found at \(contentRoot)/\(xcFrameworkName)")
         exit(1)
     }
 
-    // Framework should contain Info.plist
-    guard fileExists(atPath: "\(frameworkPath)/Info.plist") else {
-        error("No Info.plist found in \(frameworkPath)")
+    // Info.plist
+    guard fileExists(atPath: infoPlistPath) else {
+        error("No Info.plist found at \(infoPlistPath)")
         exit(1)
     }
 
-    // Framework should contain Headers/
-    guard dirExists(atPath: "\(frameworkPath)/Headers") else {
-        error("No Headers/ directory found in \(frameworkPath)")
+    // Headers
+    guard dirExists(atPath: "\(contentRoot)/Headers") else {
+        error("No Headers/ directory found in \(contentRoot)")
+        exit(1)
+    }
+    guard fileExists(atPath: "\(contentRoot)/Headers/\(xcFrameworkName).h") else {
+        error("No \(xcFrameworkName).h found in \(contentRoot)/Headers/")
         exit(1)
     }
 
-    // Headers should contain the header file
-    guard fileExists(atPath: "\(frameworkPath)/Headers/\(xcFrameworkName).h") else {
-        error("No \(xcFrameworkName).h found in \(frameworkPath)/Headers/")
+    // Modules/module.modulemap
+    guard dirExists(atPath: "\(contentRoot)/Modules") else {
+        error("No Modules/ directory found in \(contentRoot)")
+        exit(1)
+    }
+    guard fileExists(atPath: "\(contentRoot)/Modules/module.modulemap") else {
+        error("No module.modulemap found in \(contentRoot)/Modules/")
         exit(1)
     }
 
-    // Framework should contain Modules/module.modulemap
-    guard dirExists(atPath: "\(frameworkPath)/Modules") else {
-        error("No Modules/ directory found in \(frameworkPath)")
-        exit(1)
-    }
-    guard fileExists(atPath: "\(frameworkPath)/Modules/module.modulemap") else {
-        error("No module.modulemap found in \(frameworkPath)/Modules/")
-        exit(1)
+    // Versioned-bundle-only checks: required symlinks at the bundle root and
+    // Versions/Current pointing at A.
+    if versioned {
+        guard isSymlink(atPath: "\(frameworkPath)/Versions/Current") else {
+            error("\(slicePath): Versions/Current is not a symlink")
+            exit(1)
+        }
+        for top in ["Headers", "Modules", "Resources", xcFrameworkName] {
+            guard isSymlink(atPath: "\(frameworkPath)/\(top)") else {
+                error("\(slicePath): expected symlink at \(frameworkPath)/\(top)")
+                exit(1)
+            }
+        }
+    } else {
+        // Shallow bundles must NOT have a Versions/ directory.
+        if dirExists(atPath: "\(frameworkPath)/Versions") {
+            error("\(slicePath): shallow bundle should not contain Versions/")
+            exit(1)
+        }
     }
 
-    print("  \(subframework): .framework bundle structure verified")
+    print("  \(subframework): \(versioned ? "versioned" : "shallow") .framework structure verified")
 }
 
 // Verify install_name_tool set the correct rpath
