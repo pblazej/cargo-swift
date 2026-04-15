@@ -214,6 +214,22 @@ fn create_framework_bundle(
     }
 
     // Write Info.plist
+    let plist = platform.info_plist();
+    let min_version =
+        std::env::var(plist.version_env_var).unwrap_or_else(|_| plist.default_version.to_owned());
+    let device_family_block = if plist.device_family.is_empty() {
+        String::new()
+    } else {
+        let items = plist
+            .device_family
+            .iter()
+            .map(|d| format!("        <integer>{d}</integer>"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        format!("    <key>UIDeviceFamily</key>\n    <array>\n{items}\n    </array>\n")
+    };
+    let supported_platform = plist.supported_platform;
+    let version_key = plist.version_key;
     let info_plist = format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -233,9 +249,15 @@ fn create_framework_bundle(
     <string>FMWK</string>
     <key>CFBundleShortVersionString</key>
     <string>1.0</string>
+    <key>CFBundleSupportedPlatforms</key>
+    <array>
+        <string>{supported_platform}</string>
+    </array>
     <key>CFBundleVersion</key>
     <string>1</string>
-</dict>
+    <key>{version_key}</key>
+    <string>{min_version}</string>
+{device_family_block}</dict>
 </plist>
 "#
     );

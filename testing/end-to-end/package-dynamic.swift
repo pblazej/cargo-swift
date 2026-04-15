@@ -209,6 +209,21 @@ for subframework in subframeworks {
         exit(1)
     }
 
+    // Info.plist must carry the platform-version + supported-platforms keys or
+    // App Store Connect rejects the upload (error 90530 / 90360).
+    let plist = NSDictionary(contentsOfFile: infoPlistPath) as? [String: Any] ?? [:]
+    let versionKey = subframework.hasPrefix("macos") || subframework.contains("maccatalyst")
+        ? "LSMinimumSystemVersion"
+        : "MinimumOSVersion"
+    guard plist[versionKey] is String else {
+        error("\(slicePath): Info.plist missing \(versionKey)")
+        exit(1)
+    }
+    guard let supported = plist["CFBundleSupportedPlatforms"] as? [String], !supported.isEmpty else {
+        error("\(slicePath): Info.plist missing CFBundleSupportedPlatforms")
+        exit(1)
+    }
+
     // Versioned-bundle-only checks: required symlinks at the bundle root and
     // Versions/Current pointing at A.
     if versioned {
