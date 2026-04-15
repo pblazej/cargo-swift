@@ -53,13 +53,44 @@ FileManager.default.createFile(
     attributes: nil
 )
 
+// Drop a PrivacyInfo.xcprivacy alongside the project so we can pass it via
+// --privacy-manifest and assert it gets embedded everywhere.
+print("Adding PrivacyInfo.xcprivacy...")
+let privacyManifest = """
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+\t<key>NSPrivacyTracking</key>
+\t<false/>
+\t<key>NSPrivacyTrackingDomains</key>
+\t<array/>
+\t<key>NSPrivacyCollectedDataTypes</key>
+\t<array/>
+\t<key>NSPrivacyAccessedAPITypes</key>
+\t<array/>
+</dict>
+</plist>
+"""
+let privacyManifestPath = "\(projectName)/PrivacyInfo.xcprivacy"
+FileManager.default.createFile(
+    atPath: privacyManifestPath,
+    contents: privacyManifest.data(using: .utf8),
+    attributes: nil
+)
+
 // Package as dynamic library
 print("Running cargo swift package --lib-type dynamic...")
 let cargoSwiftPackage = Process()
 let xcFrameworkName = ffiModuleName
 cargoSwiftPackage.executableURL = URL(fileURLWithPath: "/usr/bin/env")
 cargoSwiftPackage.currentDirectoryPath += "/" + projectName
-cargoSwiftPackage.arguments = ["cargo", "swift", "package", "-y", "--silent", "-p", "macos", "ios", "--lib-type", "dynamic"]
+cargoSwiftPackage.arguments = [
+    "cargo", "swift", "package", "-y", "--silent",
+    "-p", "macos", "ios",
+    "--lib-type", "dynamic",
+    "--privacy-manifest", "PrivacyInfo.xcprivacy",
+]
 try! cargoSwiftPackage.run()
 cargoSwiftPackage.waitUntilExit()
 
@@ -87,6 +118,13 @@ guard dirExists(atPath: "\(projectName)/\(packageName)/Sources") else {
 }
 guard fileExists(atPath: "\(projectName)/\(packageName)/Sources/\(packageName)/\(libName).swift") else {
     error("No \(libName).swift file found in module")
+    exit(1)
+}
+
+// --privacy-manifest should drop a copy at the Swift package root so SPM
+// auto-bundles it alongside Package.swift.
+guard fileExists(atPath: "\(projectName)/\(packageName)/PrivacyInfo.xcprivacy") else {
+    error("No PrivacyInfo.xcprivacy at Swift package root (expected via --privacy-manifest)")
     exit(1)
 }
 
@@ -158,6 +196,16 @@ for subframework in subframeworks {
     }
     guard fileExists(atPath: "\(contentRoot)/Modules/module.modulemap") else {
         error("No module.modulemap found in \(contentRoot)/Modules/")
+        exit(1)
+    }
+
+    // --privacy-manifest should embed PrivacyInfo.xcprivacy alongside Info.plist
+    // (framework root for shallow, Versions/A/Resources for versioned).
+    let privacyInfoPath = versioned
+        ? "\(contentRoot)/Resources/PrivacyInfo.xcprivacy"
+        : "\(contentRoot)/PrivacyInfo.xcprivacy"
+    guard fileExists(atPath: privacyInfoPath) else {
+        error("No PrivacyInfo.xcprivacy embedded at \(privacyInfoPath)")
         exit(1)
     }
 

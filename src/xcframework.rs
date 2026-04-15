@@ -130,6 +130,7 @@ fn create_framework_bundle(
     headers_dir: &Path,
     output_dir: &Path,
     platform: ApplePlatform,
+    privacy_manifest: Option<&Path>,
 ) -> Result<PathBuf> {
     let framework_dir = output_dir.join(format!("{framework_name}.framework"));
 
@@ -241,6 +242,13 @@ fn create_framework_bundle(
     fs::write(info_plist_dir.join("Info.plist"), info_plist)
         .context("Failed to write framework Info.plist")?;
 
+    if let Some(manifest) = privacy_manifest {
+        let dst = info_plist_dir.join("PrivacyInfo.xcprivacy");
+        fs::copy(manifest, &dst).with_context(|| {
+            format!("Failed to copy privacy manifest from {manifest:?} to {dst:?}")
+        })?;
+    }
+
     if versioned {
         create_versioned_symlinks(&framework_dir, framework_name)
             .context("Failed to create framework symlinks")?;
@@ -283,6 +291,7 @@ pub fn create_xcframework(
     output_dir: &Path,
     mode: Mode,
     lib_type: LibType,
+    privacy_manifest: Option<&Path>,
 ) -> Result<()> {
     let output_dir_name = &output_dir
         .to_str()
@@ -325,6 +334,7 @@ pub fn create_xcframework(
                     &headers_dir,
                     &lib_dir,
                     target.platform(),
+                    privacy_manifest,
                 )
                 .with_context(|| {
                     format!(

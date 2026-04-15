@@ -1,6 +1,6 @@
 use std::fmt::Display;
 use std::ops::Not;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use camino::Utf8PathBuf;
@@ -69,6 +69,7 @@ pub fn run(
     features: FeatureOptions,
     skip_toolchains_check: bool,
     swift_tools_version: &str,
+    privacy_manifest: Option<PathBuf>,
 ) -> Result<()> {
     // Show deprecation warning if --xcframework-name is used
     if xcframework_name.is_some() {
@@ -99,6 +100,7 @@ pub fn run(
             features,
             skip_toolchains_check,
             swift_tools_version,
+            privacy_manifest.as_deref(),
         );
     } else if package_name.is_some() {
         Err("Package name can only be specified when building a single crate!")?;
@@ -121,6 +123,7 @@ pub fn run(
                 features.clone(),
                 skip_toolchains_check,
                 swift_tools_version,
+                privacy_manifest.as_deref(),
             )
         })
         .filter_map(|result| result.err())
@@ -142,6 +145,7 @@ fn run_for_crate(
     features: FeatureOptions,
     skip_toolchains_check: bool,
     swift_tools_version: &str,
+    privacy_manifest: Option<&Path>,
 ) -> Result<()> {
     let lib = current_crate
         .targets
@@ -262,6 +266,7 @@ fn run_for_crate(
         mode,
         lib_type,
         config,
+        privacy_manifest,
     )?;
     create_package_with_output(
         &package_name,
@@ -270,6 +275,7 @@ fn run_for_crate(
         &platforms,
         swift_tools_version,
         config,
+        privacy_manifest,
     )?;
 
     Ok(())
@@ -717,6 +723,7 @@ fn create_xcframework_with_output(
     mode: Mode,
     lib_type: LibType,
     config: &Config,
+    privacy_manifest: Option<&Path>,
 ) -> Result<()> {
     run_step(config, "Creating XCFramework...", || {
         // TODO: show command spinner here with xcbuild command
@@ -733,11 +740,13 @@ fn create_xcframework_with_output(
             &output_dir,
             mode,
             lib_type,
+            privacy_manifest,
         )
     })
     .map_err(|e| format!("Failed to create XCFramework due to the following error: \n {e}").into())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn create_package_with_output(
     package_name: &str,
     xcframework_name: &str,
@@ -745,6 +754,7 @@ fn create_package_with_output(
     platforms: &[PlatformSpec],
     swift_tools_version: &str,
     config: &Config,
+    privacy_manifest: Option<&Path>,
 ) -> Result<()> {
     run_step(
         config,
@@ -756,6 +766,7 @@ fn create_package_with_output(
                 disable_warnings,
                 platforms,
                 swift_tools_version,
+                privacy_manifest,
             )
         },
     )?;

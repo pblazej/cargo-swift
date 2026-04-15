@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::process::ExitCode;
 
 use cargo_swift::{
@@ -121,6 +122,13 @@ enum Action {
 
         #[arg(long, default_value = "5.5")]
         swift_tools_version: String,
+
+        #[arg(long, value_name = "PATH")]
+        /// Optional path to a PrivacyInfo.xcprivacy manifest. When provided, the
+        /// file is copied to the Swift package root (where SPM auto-bundles it)
+        /// and embedded inside every .framework slice next to Info.plist so the
+        /// package is App Store–compliant out of the box.
+        privacy_manifest: Option<PathBuf>,
     },
 }
 
@@ -151,6 +159,7 @@ fn main() -> ExitCode {
             all_features,
             no_default_features,
             swift_tools_version,
+            privacy_manifest,
         } => package::run(
             platforms,
             target.as_deref(),
@@ -167,6 +176,7 @@ fn main() -> ExitCode {
             },
             skip_toolchains_check,
             &swift_tools_version,
+            privacy_manifest,
         ),
     };
 
