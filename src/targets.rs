@@ -143,9 +143,7 @@ impl Target {
             .into_iter()
             .map(|arch| {
                 let mut cmd = if toolchain_targets.needs_build_std(arch) {
-                    // Include panic_abort so release profiles with `panic = "abort"`
-                    // link correctly; the crate is harmless when unused.
-                    command("cargo +nightly build -Z build-std=std,panic_abort")
+                    command("cargo +nightly build -Z build-std")
                 } else if toolchain_targets.use_nightly() {
                     command("cargo +nightly build")
                 } else {

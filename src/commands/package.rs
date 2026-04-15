@@ -70,6 +70,7 @@ pub fn run(
     skip_toolchains_check: bool,
     swift_tools_version: &str,
     privacy_manifest: Option<PathBuf>,
+    exclude_arch: Vec<String>,
 ) -> Result<()> {
     // Show deprecation warning if --xcframework-name is used
     if xcframework_name.is_some() {
@@ -101,6 +102,7 @@ pub fn run(
             skip_toolchains_check,
             swift_tools_version,
             privacy_manifest.as_deref(),
+            &exclude_arch,
         );
     } else if package_name.is_some() {
         Err("Package name can only be specified when building a single crate!")?;
@@ -124,6 +126,7 @@ pub fn run(
                 skip_toolchains_check,
                 swift_tools_version,
                 privacy_manifest.as_deref(),
+                &exclude_arch,
             )
         })
         .filter_map(|result| result.err())
@@ -146,6 +149,7 @@ fn run_for_crate(
     skip_toolchains_check: bool,
     swift_tools_version: &str,
     privacy_manifest: Option<&Path>,
+    exclude_arch: &[String],
 ) -> Result<()> {
     let lib = current_crate
         .targets
@@ -206,6 +210,46 @@ fn run_for_crate(
             return Err(Error::from(format!(
                 "No matching build target for {}",
                 build_target
+            )));
+        }
+    }
+
+    if !exclude_arch.is_empty() {
+        let is_excluded = |arch: &str| exclude_arch.iter().any(|e| e == arch);
+        targets.retain_mut(|platform_target| match platform_target {
+            Target::Single { architecture, .. } => !is_excluded(architecture),
+            Target::Universal {
+                architectures,
+                display_name,
+                platform,
+                ..
+            } => {
+                let remaining: Vec<&'static str> = architectures
+                    .iter()
+                    .copied()
+                    .filter(|a| !is_excluded(a))
+                    .collect();
+                match nonempty::NonEmpty::from_vec(remaining) {
+                    None => false,
+                    Some(remaining) if remaining.tail.is_empty() => {
+                        *platform_target = Target::Single {
+                            architecture: remaining.head,
+                            display_name,
+                            platform: *platform,
+                        };
+                        true
+                    }
+                    Some(remaining) => {
+                        *architectures = remaining;
+                        true
+                    }
+                }
+            }
+        });
+        if targets.is_empty() {
+            return Err(Error::from(format!(
+                "All build targets were excluded by --exclude-arch: {}",
+                exclude_arch.join(", ")
             )));
         }
     }

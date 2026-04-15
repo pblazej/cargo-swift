@@ -129,6 +129,15 @@ enum Action {
         /// and embedded inside every .framework slice next to Info.plist so the
         /// package is App Store–compliant out of the box.
         privacy_manifest: Option<PathBuf>,
+
+        #[arg(long = "exclude-arch", value_name = "TRIPLE")]
+        /// Rust target triple(s) to exclude from the build, mirroring Xcode's
+        /// EXCLUDED_ARCHS. Use to drop architectures from universal slices
+        /// (e.g. `--exclude-arch x86_64-apple-tvos` to skip Intel tvOS
+        /// simulator, which is permanently tier-3 and forces `-Z build-std`).
+        /// Universal slices with one remaining arch collapse to a single-arch
+        /// slice; slices with no remaining archs drop out entirely.
+        exclude_arch: Vec<String>,
     },
 }
 
@@ -160,6 +169,7 @@ fn main() -> ExitCode {
             no_default_features,
             swift_tools_version,
             privacy_manifest,
+            exclude_arch,
         } => package::run(
             platforms,
             target.as_deref(),
@@ -177,6 +187,7 @@ fn main() -> ExitCode {
             skip_toolchains_check,
             &swift_tools_version,
             privacy_manifest,
+            exclude_arch,
         ),
     };
 
