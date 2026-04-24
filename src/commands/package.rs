@@ -70,6 +70,7 @@ pub fn run(
     skip_toolchains_check: bool,
     swift_tools_version: &str,
     privacy_manifest: Option<PathBuf>,
+    bundle_identifier: Option<String>,
     exclude_arch: Vec<String>,
 ) -> Result<()> {
     // Show deprecation warning if --xcframework-name is used
@@ -102,6 +103,7 @@ pub fn run(
             skip_toolchains_check,
             swift_tools_version,
             privacy_manifest.as_deref(),
+            bundle_identifier,
             &exclude_arch,
         );
     } else if package_name.is_some() {
@@ -126,6 +128,7 @@ pub fn run(
                 skip_toolchains_check,
                 swift_tools_version,
                 privacy_manifest.as_deref(),
+                bundle_identifier.clone(),
                 &exclude_arch,
             )
         })
@@ -149,6 +152,7 @@ fn run_for_crate(
     skip_toolchains_check: bool,
     swift_tools_version: &str,
     privacy_manifest: Option<&Path>,
+    bundle_identifier: Option<String>,
     exclude_arch: &[String],
 ) -> Result<()> {
     let lib = current_crate
@@ -300,6 +304,15 @@ fn run_for_crate(
     // Use the FFI module name as the xcframework name by default
     let xcframework_name = xcframework_name.unwrap_or_else(|| ffi_module_name.clone());
 
+    // Resolve bundle identifier for dynamic .framework bundles
+    let bundle_identifier = if lib_type == LibType::Dynamic {
+        Some(bundle_identifier.unwrap_or_else(|| {
+            prompt_bundle_identifier(&xcframework_name, config.accept_all)
+        }))
+    } else {
+        None
+    };
+
     recreate_output_dir(&package_name).expect("Could not create package output directory!");
     create_xcframework_with_output(
         &targets,
@@ -311,6 +324,7 @@ fn run_for_crate(
         lib_type,
         config,
         privacy_manifest,
+        bundle_identifier.as_deref(),
     )?;
     create_package_with_output(
         &package_name,
@@ -688,6 +702,21 @@ fn prompt_package_name(crate_name: &str, accept_all: bool) -> String {
         .unwrap()
 }
 
+fn prompt_bundle_identifier(xcframework_name: &str, accept_all: bool) -> String {
+    let default = format!("com.cargo-swift.{xcframework_name}");
+
+    if accept_all {
+        return default;
+    }
+
+    let theme = prompt_theme();
+    Input::with_theme(&theme)
+        .with_prompt("Bundle Identifier")
+        .default(default)
+        .interact_text()
+        .unwrap()
+}
+
 fn pick_lib_type(
     options: &[LibType],
     suggested: Option<LibType>,
@@ -768,6 +797,7 @@ fn create_xcframework_with_output(
     lib_type: LibType,
     config: &Config,
     privacy_manifest: Option<&Path>,
+    bundle_identifier: Option<&str>,
 ) -> Result<()> {
     run_step(config, "Creating XCFramework...", || {
         // TODO: show command spinner here with xcbuild command
@@ -785,6 +815,7 @@ fn create_xcframework_with_output(
             mode,
             lib_type,
             privacy_manifest,
+            bundle_identifier,
         )
     })
     .map_err(|e| format!("Failed to create XCFramework due to the following error: \n {e}").into())

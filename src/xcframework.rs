@@ -127,6 +127,7 @@ pub fn patch_xcframework(
 fn create_framework_bundle(
     dylib_path: &str,
     framework_name: &str,
+    bundle_identifier: &str,
     headers_dir: &Path,
     output_dir: &Path,
     platform: ApplePlatform,
@@ -240,7 +241,7 @@ fn create_framework_bundle(
     <key>CFBundleExecutable</key>
     <string>{framework_name}</string>
     <key>CFBundleIdentifier</key>
-    <string>com.cargo-swift.{framework_name}</string>
+    <string>{bundle_identifier}</string>
     <key>CFBundleInfoDictionaryVersion</key>
     <string>6.0</string>
     <key>CFBundleName</key>
@@ -314,6 +315,7 @@ pub fn create_xcframework(
     mode: Mode,
     lib_type: LibType,
     privacy_manifest: Option<&Path>,
+    bundle_identifier: Option<&str>,
 ) -> Result<()> {
     let output_dir_name = &output_dir
         .to_str()
@@ -345,6 +347,8 @@ pub fn create_xcframework(
         }
         LibType::Dynamic => {
             let headers_dir = generated_dir.join("headers");
+            let default_id = format!("com.cargo-swift.{xcframework_name}");
+            let bundle_id = bundle_identifier.unwrap_or(&default_id);
 
             for target in targets {
                 let dylib_path = target.library_path(lib_name, mode, lib_type);
@@ -353,6 +357,7 @@ pub fn create_xcframework(
                 let fw_path = create_framework_bundle(
                     &dylib_path,
                     xcframework_name,
+                    bundle_id,
                     &headers_dir,
                     &lib_dir,
                     target.platform(),

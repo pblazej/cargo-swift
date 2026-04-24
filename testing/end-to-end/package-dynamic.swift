@@ -85,11 +85,13 @@ let cargoSwiftPackage = Process()
 let xcFrameworkName = ffiModuleName
 cargoSwiftPackage.executableURL = URL(fileURLWithPath: "/usr/bin/env")
 cargoSwiftPackage.currentDirectoryPath += "/" + projectName
+let bundleIdentifier = "io.test.dynamic.\(ffiModuleName)"
 cargoSwiftPackage.arguments = [
     "cargo", "swift", "package", "-y", "--silent",
     "-p", "macos", "ios",
     "--lib-type", "dynamic",
     "--privacy-manifest", "PrivacyInfo.xcprivacy",
+    "--bundle-identifier", bundleIdentifier,
 ]
 try! cargoSwiftPackage.run()
 cargoSwiftPackage.waitUntilExit()
@@ -221,6 +223,13 @@ for subframework in subframeworks {
     }
     guard let supported = plist["CFBundleSupportedPlatforms"] as? [String], !supported.isEmpty else {
         error("\(slicePath): Info.plist missing CFBundleSupportedPlatforms")
+        exit(1)
+    }
+
+    // --bundle-identifier should be used as CFBundleIdentifier
+    guard let actualId = plist["CFBundleIdentifier"] as? String, actualId == bundleIdentifier else {
+        let actualId = plist["CFBundleIdentifier"] as? String ?? "<missing>"
+        error("\(slicePath): CFBundleIdentifier should be \(bundleIdentifier), got \(actualId)")
         exit(1)
     }
 
