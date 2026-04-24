@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::process::ExitCode;
 
 use cargo_swift::{
@@ -121,6 +122,28 @@ enum Action {
 
         #[arg(long, default_value = "5.5")]
         swift_tools_version: String,
+
+        #[arg(long, value_name = "PATH")]
+        /// Optional path to a PrivacyInfo.xcprivacy manifest. When provided, the
+        /// file is copied to the Swift package root (where SPM auto-bundles it)
+        /// and embedded inside every .framework slice next to Info.plist so the
+        /// package is App Store–compliant out of the box.
+        privacy_manifest: Option<PathBuf>,
+
+        #[arg(long, value_name = "ID")]
+        /// Bundle identifier for .framework bundles when building dynamic
+        /// libraries (e.g. com.example.MyLib). If omitted, you will be
+        /// prompted interactively (or com.cargo-swift.{name} is used with -y).
+        bundle_identifier: Option<String>,
+
+        #[arg(long = "exclude-arch", value_name = "TRIPLE")]
+        /// Rust target triple(s) to exclude from the build, mirroring Xcode's
+        /// EXCLUDED_ARCHS. Use to drop architectures from universal slices
+        /// (e.g. `--exclude-arch x86_64-apple-tvos` to skip Intel tvOS
+        /// simulator, which is permanently tier-3 and forces `-Z build-std`).
+        /// Universal slices with one remaining arch collapse to a single-arch
+        /// slice; slices with no remaining archs drop out entirely.
+        exclude_arch: Vec<String>,
     },
 }
 
@@ -151,6 +174,9 @@ fn main() -> ExitCode {
             all_features,
             no_default_features,
             swift_tools_version,
+            privacy_manifest,
+            bundle_identifier,
+            exclude_arch,
         } => package::run(
             platforms,
             target.as_deref(),
@@ -167,6 +193,9 @@ fn main() -> ExitCode {
             },
             skip_toolchains_check,
             &swift_tools_version,
+            privacy_manifest,
+            bundle_identifier,
+            exclude_arch,
         ),
     };
 

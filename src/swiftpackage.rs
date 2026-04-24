@@ -2,6 +2,7 @@ use askama::Template;
 use glob::glob;
 use itertools::Itertools;
 use std::fs::{copy, create_dir_all, write};
+use std::path::Path;
 
 use crate::{package, recreate_dir, templating, Result};
 
@@ -14,6 +15,7 @@ pub fn create_swiftpackage(
     disable_warnings: bool,
     platforms: &[package::PlatformSpec],
     swift_tools_version: &str,
+    privacy_manifest: Option<&Path>,
 ) -> Result<()> {
     let platforms = &platforms.iter().map(|p| p.package_swift()).join(", ");
     // TODO: Instead of assuming the directory and the xcframework, let this manage directory
@@ -51,6 +53,11 @@ pub fn create_swiftpackage(
             format!("{}/Sources/{}/{}", package_name, package_name, file_name),
         )
         .map_err(|e| format!("Could not copy generated swift source files: \n {e}"))?;
+    }
+
+    if let Some(manifest) = privacy_manifest {
+        copy(manifest, format!("{}/PrivacyInfo.xcprivacy", package_name))
+            .map_err(|e| format!("Could not copy privacy manifest: \n {e}"))?;
     }
 
     Ok(())

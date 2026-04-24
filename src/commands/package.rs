@@ -1,6 +1,6 @@
 use std::fmt::Display;
 use std::ops::Not;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use camino::Utf8PathBuf;
@@ -69,6 +69,9 @@ pub fn run(
     features: FeatureOptions,
     skip_toolchains_check: bool,
     swift_tools_version: &str,
+    privacy_manifest: Option<PathBuf>,
+    bundle_identifier: Option<String>,
+    exclude_arch: Vec<String>,
 ) -> Result<()> {
     // Show deprecation warning if --xcframework-name is used
     if xcframework_name.is_some() {
@@ -99,6 +102,9 @@ pub fn run(
             features,
             skip_toolchains_check,
             swift_tools_version,
+            privacy_manifest.as_deref(),
+            bundle_identifier,
+            &exclude_arch,
         );
     } else if package_name.is_some() {
         Err("Package name can only be specified when building a single crate!")?;
@@ -121,6 +127,9 @@ pub fn run(
                 features.clone(),
                 skip_toolchains_check,
                 swift_tools_version,
+                privacy_manifest.as_deref(),
+                bundle_identifier.clone(),
+                &exclude_arch,
             )
         })
         .filter_map(|result| result.err())
@@ -142,6 +151,9 @@ fn run_for_crate(
     features: FeatureOptions,
     skip_toolchains_check: bool,
     swift_tools_version: &str,
+    privacy_manifest: Option<&Path>,
+    bundle_identifier: Option<String>,
+    exclude_arch: &[String],
 ) -> Result<()> {
     let lib = current_crate
         .targets
@@ -156,9 +168,9 @@ fn run_for_crate(
     let lib_type = pick_lib_type(&lib_types, lib_type_arg.clone().into(), config)?;
 
     if lib_type == LibType::Dynamic {
-        warning!(
+        info!(
             &config,
-            "Building as dynamic library is discouraged. It might prevent apps that use this library from publishing to the App Store."
+            "Building as dynamic library. The dylib will be wrapped in a .framework bundle for App Store compatibility."
         );
     }
 
@@ -202,6 +214,46 @@ fn run_for_crate(
             return Err(Error::from(format!(
                 "No matching build target for {}",
                 build_target
+            )));
+        }
+    }
+
+    if !exclude_arch.is_empty() {
+        let is_excluded = |arch: &str| exclude_arch.iter().any(|e| e == arch);
+        targets.retain_mut(|platform_target| match platform_target {
+            Target::Single { architecture, .. } => !is_excluded(architecture),
+            Target::Universal {
+                architectures,
+                display_name,
+                platform,
+                ..
+            } => {
+                let remaining: Vec<&'static str> = architectures
+                    .iter()
+                    .copied()
+                    .filter(|a| !is_excluded(a))
+                    .collect();
+                match nonempty::NonEmpty::from_vec(remaining) {
+                    None => false,
+                    Some(remaining) if remaining.tail.is_empty() => {
+                        *platform_target = Target::Single {
+                            architecture: remaining.head,
+                            display_name,
+                            platform: *platform,
+                        };
+                        true
+                    }
+                    Some(remaining) => {
+                        *architectures = remaining;
+                        true
+                    }
+                }
+            }
+        });
+        if targets.is_empty() {
+            return Err(Error::from(format!(
+                "All build targets were excluded by --exclude-arch: {}",
+                exclude_arch.join(", ")
             )));
         }
     }
@@ -252,6 +304,15 @@ fn run_for_crate(
     // Use the FFI module name as the xcframework name by default
     let xcframework_name = xcframework_name.unwrap_or_else(|| ffi_module_name.clone());
 
+    // Resolve bundle identifier for dynamic .framework bundles
+    let bundle_identifier = if lib_type == LibType::Dynamic {
+        Some(bundle_identifier.unwrap_or_else(|| {
+            prompt_bundle_identifier(&xcframework_name, config.accept_all)
+        }))
+    } else {
+        None
+    };
+
     recreate_output_dir(&package_name).expect("Could not create package output directory!");
     create_xcframework_with_output(
         &targets,
@@ -262,6 +323,8 @@ fn run_for_crate(
         mode,
         lib_type,
         config,
+        privacy_manifest,
+        bundle_identifier.as_deref(),
     )?;
     create_package_with_output(
         &package_name,
@@ -270,6 +333,7 @@ fn run_for_crate(
         &platforms,
         swift_tools_version,
         config,
+        privacy_manifest,
     )?;
 
     Ok(())
@@ -638,6 +702,21 @@ fn prompt_package_name(crate_name: &str, accept_all: bool) -> String {
         .unwrap()
 }
 
+fn prompt_bundle_identifier(xcframework_name: &str, accept_all: bool) -> String {
+    let default = format!("com.cargo-swift.{xcframework_name}");
+
+    if accept_all {
+        return default;
+    }
+
+    let theme = prompt_theme();
+    Input::with_theme(&theme)
+        .with_prompt("Bundle Identifier")
+        .default(default)
+        .interact_text()
+        .unwrap()
+}
+
 fn pick_lib_type(
     options: &[LibType],
     suggested: Option<LibType>,
@@ -717,6 +796,8 @@ fn create_xcframework_with_output(
     mode: Mode,
     lib_type: LibType,
     config: &Config,
+    privacy_manifest: Option<&Path>,
+    bundle_identifier: Option<&str>,
 ) -> Result<()> {
     run_step(config, "Creating XCFramework...", || {
         // TODO: show command spinner here with xcbuild command
@@ -733,11 +814,14 @@ fn create_xcframework_with_output(
             &output_dir,
             mode,
             lib_type,
+            privacy_manifest,
+            bundle_identifier,
         )
     })
     .map_err(|e| format!("Failed to create XCFramework due to the following error: \n {e}").into())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn create_package_with_output(
     package_name: &str,
     xcframework_name: &str,
@@ -745,6 +829,7 @@ fn create_package_with_output(
     platforms: &[PlatformSpec],
     swift_tools_version: &str,
     config: &Config,
+    privacy_manifest: Option<&Path>,
 ) -> Result<()> {
     run_step(
         config,
@@ -756,6 +841,7 @@ fn create_package_with_output(
                 disable_warnings,
                 platforms,
                 swift_tools_version,
+                privacy_manifest,
             )
         },
     )?;
