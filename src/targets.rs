@@ -195,21 +195,13 @@ impl Target {
         }
     }
 
-    fn rpath_install_id_commands(
-        &self,
-        _lib_name: &str,
-        _mode: Mode,
-        _lib_type: LibType,
-    ) -> Vec<Command> {
-        // install_name_tool for dynamic libs is now handled during framework bundling
-        // in xcframework::create_framework_bundle(), where the framework name is known.
-        vec![]
-    }
-
     /// Generates all commands necessary to build this target
     ///
     /// This function returns a list of commands that should be executed in their given
     /// order to build this target (and bundle architecture targets with lipo if it is a universal target).
+    ///
+    /// Note: `install_name_tool` for dynamic libs is handled during framework bundling
+    /// in `xcframework::create_framework_bundle()`, where the framework name is known.
     pub fn commands(
         &self,
         lib_name: &str,
@@ -221,7 +213,6 @@ impl Target {
         self.cargo_build_commands(mode, features, toolchain_targets)
             .into_iter()
             .chain(self.lipo_commands(lib_name, mode, lib_type))
-            .chain(self.rpath_install_id_commands(lib_name, mode, lib_type))
             .collect()
     }
 
