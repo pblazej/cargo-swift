@@ -195,27 +195,13 @@ impl Target {
         }
     }
 
-    fn rpath_install_id_commands(
-        &self,
-        lib_name: &str,
-        mode: Mode,
-        lib_type: LibType,
-    ) -> Vec<Command> {
-        if matches!(lib_type, LibType::Dynamic) {
-            vec![command(format!(
-                "install_name_tool -id @rpath/{} {}",
-                library_file_name(lib_name, lib_type),
-                self.library_path(lib_name, mode, lib_type)
-            ))]
-        } else {
-            vec![]
-        }
-    }
-
     /// Generates all commands necessary to build this target
     ///
     /// This function returns a list of commands that should be executed in their given
     /// order to build this target (and bundle architecture targets with lipo if it is a universal target).
+    ///
+    /// Note: `install_name_tool` for dynamic libs is handled during framework bundling
+    /// in `xcframework::create_framework_bundle()`, where the framework name is known.
     pub fn commands(
         &self,
         lib_name: &str,
@@ -227,7 +213,6 @@ impl Target {
         self.cargo_build_commands(mode, features, toolchain_targets)
             .into_iter()
             .chain(self.lipo_commands(lib_name, mode, lib_type))
-            .chain(self.rpath_install_id_commands(lib_name, mode, lib_type))
             .collect()
     }
 
@@ -297,7 +282,114 @@ pub enum ApplePlatform {
     VisionOSSimulator,
 }
 
+/// Per-platform bits the framework Info.plist needs for App Store validation.
+///
+/// App Store Connect rejects uploads whose embedded frameworks are missing the
+/// platform-specific version / platform keys (e.g. `MinimumOSVersion` for iOS),
+/// so `create_framework_bundle` composes the Info.plist from these fragments.
+pub struct PlatformInfoPlist {
+    /// Either "MinimumOSVersion" (iOS / tvOS / visionOS / watchOS) or
+    /// "LSMinimumSystemVersion" (macOS / Mac Catalyst — Apple treats Catalyst
+    /// bundles as macOS bundles for Info.plist purposes).
+    pub version_key: &'static str,
+    /// Deployment-target env var whose value supplies `version_key`.
+    pub version_env_var: &'static str,
+    /// Fallback used when the env var is unset; matches the lower bound of
+    /// `PlatformSpec::package_swift`'s defaults.
+    pub default_version: &'static str,
+    /// Value of the `CFBundleSupportedPlatforms` single-element array.
+    pub supported_platform: &'static str,
+    /// UIDeviceFamily integer values (empty for macOS, where the key is n/a).
+    pub device_family: &'static [u8],
+}
+
 impl ApplePlatform {
+    /// macOS and Mac Catalyst use the historical "versioned" framework bundle layout
+    /// (`Versions/A/...` with symlinks at the top level). All other Apple platforms
+    /// use the flat ("shallow") layout where Info.plist sits at the bundle root.
+    pub fn uses_versioned_bundle(&self) -> bool {
+        matches!(self, ApplePlatform::MacOS | ApplePlatform::MacCatalyst)
+    }
+
+    /// Returns the platform-specific Info.plist fragments required by App Store
+    /// validation. Values intentionally mirror what Xcode emits for native
+    /// `.framework` bundles so third-party uploads aren't rejected.
+    pub fn info_plist(&self) -> PlatformInfoPlist {
+        use ApplePlatform::*;
+        match self {
+            IOS => PlatformInfoPlist {
+                version_key: "MinimumOSVersion",
+                version_env_var: "IPHONEOS_DEPLOYMENT_TARGET",
+                default_version: "13.0",
+                supported_platform: "iPhoneOS",
+                device_family: &[1, 2],
+            },
+            IOSSimulator => PlatformInfoPlist {
+                version_key: "MinimumOSVersion",
+                version_env_var: "IPHONEOS_DEPLOYMENT_TARGET",
+                default_version: "13.0",
+                supported_platform: "iPhoneSimulator",
+                device_family: &[1, 2],
+            },
+            MacOS => PlatformInfoPlist {
+                version_key: "LSMinimumSystemVersion",
+                version_env_var: "MACOSX_DEPLOYMENT_TARGET",
+                default_version: "10.15",
+                supported_platform: "MacOSX",
+                device_family: &[],
+            },
+            MacCatalyst => PlatformInfoPlist {
+                version_key: "LSMinimumSystemVersion",
+                version_env_var: "MACOSX_DEPLOYMENT_TARGET",
+                default_version: "10.15",
+                supported_platform: "MacOSX",
+                device_family: &[2],
+            },
+            TvOS => PlatformInfoPlist {
+                version_key: "MinimumOSVersion",
+                version_env_var: "TVOS_DEPLOYMENT_TARGET",
+                default_version: "13.0",
+                supported_platform: "AppleTVOS",
+                device_family: &[3],
+            },
+            TvOSSimulator => PlatformInfoPlist {
+                version_key: "MinimumOSVersion",
+                version_env_var: "TVOS_DEPLOYMENT_TARGET",
+                default_version: "13.0",
+                supported_platform: "AppleTVSimulator",
+                device_family: &[3],
+            },
+            WatchOS => PlatformInfoPlist {
+                version_key: "MinimumOSVersion",
+                version_env_var: "WATCHOS_DEPLOYMENT_TARGET",
+                default_version: "6.0",
+                supported_platform: "WatchOS",
+                device_family: &[4],
+            },
+            WatchOSSimulator => PlatformInfoPlist {
+                version_key: "MinimumOSVersion",
+                version_env_var: "WATCHOS_DEPLOYMENT_TARGET",
+                default_version: "6.0",
+                supported_platform: "WatchSimulator",
+                device_family: &[4],
+            },
+            VisionOS => PlatformInfoPlist {
+                version_key: "MinimumOSVersion",
+                version_env_var: "XROS_DEPLOYMENT_TARGET",
+                default_version: "1.0",
+                supported_platform: "XROS",
+                device_family: &[7],
+            },
+            VisionOSSimulator => PlatformInfoPlist {
+                version_key: "MinimumOSVersion",
+                version_env_var: "XROS_DEPLOYMENT_TARGET",
+                default_version: "1.0",
+                supported_platform: "XRSimulator",
+                device_family: &[7],
+            },
+        }
+    }
+
     pub fn target(&self) -> Target {
         use ApplePlatform::*;
         match self {
